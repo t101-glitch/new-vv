@@ -1,0 +1,24 @@
+# connector/queries.gql
+
+# ... rest of queries ...
+
+# Get a single user
+query GetUser($id: String!) @auth(level: USER_EMAIL_VERIFIED) {
+  user(id: $id) {
+    id
+    name
+    role
+    plan
+  }
+}
+
+# connector/mutations.gql
+
+# ... rest of mutations ...
+
+# Update user plan
+mutation UpdateUserPlan($id: String!, $plan: String!) @auth(level: USER_EMAIL_VERIFIED) {
+  user_update(id: $id, data: {
+    plan: $plan
+  })
+}

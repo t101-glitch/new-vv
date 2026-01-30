@@ -1,33 +1,38 @@
 import React from 'react';
-import { HashRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { HashRouter, Routes, Route } from 'react-router-dom';
 import { SessionProvider } from './context/SessionContext';
 import { UserProvider } from './context/UserContext';
 import Layout from './components/Layout';
 import StudentDashboard from './pages/StudentDashboard';
 import Workspace from './pages/Workspace';
-import AdminDashboard from './pages/AdminDashboard'; // This is now the "AdminConsole"
-
-// Mock UserProvider heavily simplified since we are removing authentication logic from the UI port
-// In a real app we would merge the existing UserContext with the new UI.
-// For now, we will wrap it to prevent errors if existing components need it, 
-// but the new components rely mostly on SessionContext.
+import AdminDashboard from './pages/AdminDashboard';
+import Login from './pages/Login';
+import NotFound from './pages/NotFound';
+import { ProtectedRoute, AdminRoute } from './components/AuthRoutes';
+import ErrorBoundary from './components/ErrorBoundary';
+import { PaymentProvider } from './context/PaymentContext';
 
 const App: React.FC = () => {
   return (
-    <UserProvider>
-      <SessionProvider>
-        <HashRouter>
-          <Layout>
-            <Routes>
-              <Route path="/" element={<StudentDashboard />} />
-              <Route path="/workspace/:id" element={<Workspace />} />
-              <Route path="/admin" element={<AdminDashboard />} />
-              <Route path="*" element={<Navigate to="/" replace />} />
-            </Routes>
-          </Layout>
-        </HashRouter>
-      </SessionProvider>
-    </UserProvider>
+    <ErrorBoundary>
+      <UserProvider>
+        <PaymentProvider>
+          <SessionProvider>
+            <HashRouter>
+              <Layout>
+                <Routes>
+                  <Route path="/login" element={<Login />} />
+                  <Route path="/" element={<ProtectedRoute><StudentDashboard /></ProtectedRoute>} />
+                  <Route path="/workspace/:id" element={<ProtectedRoute><Workspace /></ProtectedRoute>} />
+                  <Route path="/admin" element={<AdminRoute><AdminDashboard /></AdminRoute>} />
+                  <Route path="*" element={<ProtectedRoute><NotFound /></ProtectedRoute>} />
+                </Routes>
+              </Layout>
+            </HashRouter>
+          </SessionProvider>
+        </PaymentProvider>
+      </UserProvider>
+    </ErrorBoundary>
   );
 };
 

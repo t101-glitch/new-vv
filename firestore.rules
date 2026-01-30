@@ -1,0 +1,17 @@
+# Firebase Security Rules (Data Connect)
+
+# Note: Data Connect rules are managed within the schema.gql using @auth decorators
+# Alternatively, if using Firestore/Storage:
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /sessions/{sessionId} {
+      // Students can only read/write their own sessions
+      allow read, write: if request.auth != null && (resource.data.studentId == request.auth.uid || request.auth.token.admin == true);
+    }
+    match /users/{userId} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null && request.auth.uid == userId;
+    }
+  }
+}

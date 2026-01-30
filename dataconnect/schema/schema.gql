@@ -1,0 +1,33 @@
+# schema/schema.gql
+
+# Define the user profile
+type User @table {
+  id: String! @primaryKey
+  name: String!
+  role: String! # STUDENT, ADMIN
+  avatarUrl: String
+  plan: String
+}
+
+# Define the session
+type Session @table {
+  id: String! @primaryKey
+  studentId: String!
+  studentName: String!
+  subject: String!
+  context: String!
+  mode: String! # INTERACTIVE, FULL_SOLUTION
+  status: String! # ACTIVE, WAITING_FOR_ADMIN, COMPLETED
+  createdAt: Timestamp! @default(expr: "request.time")
+}
+
+# Define the messages within a session
+type Message @table {
+  id: UUID! @default(expr: "uuidV4()")
+  sessionId: String!
+  role: String! # STUDENT, ADMIN, SYSTEM
+  content: String!
+  timestamp: Timestamp! @default(expr: "request.time")
+}
+
+# Relationships (defined via queries in Data Connect)

@@ -1,12 +1,14 @@
 import React, { useState } from 'react';
 import { useUser } from '../context/UserContext';
-import { Navigate } from 'react-router-dom';
+import { useNavigate, Navigate } from 'react-router-dom';
 import { LogIn, UserPlus, Mail, Lock, User as UserIcon, AlertCircle, Loader2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
 const Login: React.FC = () => {
-    const { loginWithGoogle, loginWithEmail, registerWithEmail, isAuthenticated } = useUser();
-    const [mode, setMode] = useState<'login' | 'register'>('login');
+    const { loginWithGoogle, loginWithEmail, registerWithEmail, resetPassword, isAuthenticated } = useUser();
+    const navigate = useNavigate();
+    const [mode, setMode] = useState<'login' | 'register' | 'reset'>('login');
+    const [resetSent, setResetSent] = useState(false);
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
     const [name, setName] = useState('');
@@ -25,9 +27,15 @@ const Login: React.FC = () => {
         try {
             if (mode === 'login') {
                 await loginWithEmail(email, password);
-            } else {
+            } else if (mode === 'register') {
                 if (!name) throw new Error("Please enter your name");
                 await registerWithEmail(email, password, name);
+                // Success! Redirect to verification page
+                navigate('/verify-email', { state: { email } });
+            } else {
+                // Password Reset
+                await resetPassword(email);
+                setResetSent(true);
             }
         } catch (err: any) {
             setError(err.message || "An unexpected error occurred");
@@ -51,18 +59,21 @@ const Login: React.FC = () => {
                     <div className="w-16 h-16 bg-indigo-500/10 border border-indigo-500/20 rounded-2xl flex items-center justify-center mx-auto mb-6">
                         {mode === 'login' ? (
                             <LogIn className="w-8 h-8 text-indigo-400" />
-                        ) : (
+                        ) : mode === 'register' ? (
                             <UserPlus className="w-8 h-8 text-purple-400" />
+                        ) : (
+                            <Mail className="w-8 h-8 text-amber-400" />
                         )}
                     </div>
 
                     <h1 className="text-3xl font-bold text-white text-center mb-2 font-outfit">
-                        {mode === 'login' ? 'Welcome Back' : 'Create Account'}
+                        {mode === 'login' ? 'Welcome Back' : mode === 'register' ? 'Create Account' : 'Reset Password'}
                     </h1>
                     <p className="text-slate-400 text-center mb-8 text-sm">
                         {mode === 'login'
                             ? 'Sign in to access your academic workspace.'
-                            : 'Join VarsiVault to start your academic journey.'}
+                            : mode === 'register' ? 'Join VarsiVault to start your academic journey.'
+                                : 'Enter your email to receive a password reset link.'}
                     </p>
 
                     <form onSubmit={handleSubmit} className="space-y-4">
@@ -99,18 +110,42 @@ const Login: React.FC = () => {
                             />
                         </div>
 
-                        <div className="relative">
-                            <Lock className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-500" />
-                            <input
-                                type="password"
-                                placeholder="Password"
-                                required
-                                minLength={6}
-                                value={password}
-                                onChange={(e) => setPassword(e.target.value)}
-                                className="w-full bg-slate-800/50 border border-slate-700 focus:border-indigo-500/50 focus:ring-2 focus:ring-indigo-500/20 outline-none rounded-xl py-3 pl-12 pr-4 text-white placeholder-slate-500 transition-all"
-                            />
-                        </div>
+                        <AnimatePresence mode="wait">
+                            {mode !== 'reset' && (
+                                <motion.div
+                                    initial={{ opacity: 0, height: 0 }}
+                                    animate={{ opacity: 1, height: 'auto' }}
+                                    exit={{ opacity: 0, height: 0 }}
+                                    className="relative"
+                                >
+                                    <Lock className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-500" />
+                                    <input
+                                        type="password"
+                                        placeholder="Password"
+                                        required
+                                        minLength={6}
+                                        value={password}
+                                        onChange={(e) => setPassword(e.target.value)}
+                                        className="w-full bg-slate-800/50 border border-slate-700 focus:border-indigo-500/50 focus:ring-2 focus:ring-indigo-500/20 outline-none rounded-xl py-3 pl-12 pr-4 text-white placeholder-slate-500 transition-all"
+                                    />
+                                </motion.div>
+                            )}
+                        </AnimatePresence>
+
+                        {mode === 'login' && (
+                            <div className="flex justify-end">
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        setMode('reset');
+                                        setError(null);
+                                    }}
+                                    className="text-xs text-indigo-400 hover:text-indigo-300 font-medium transition-colors"
+                                >
+                                    Forgot Password?
+                                </button>
+                            </div>
+                        )}
 
                         <AnimatePresence>
                             {error && (
@@ -123,17 +158,27 @@ const Login: React.FC = () => {
                                     {error}
                                 </motion.div>
                             )}
+                            {resetSent && (
+                                <motion.div
+                                    initial={{ opacity: 0, scale: 0.95 }}
+                                    animate={{ opacity: 1, scale: 1 }}
+                                    className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center gap-3 text-emerald-400 text-sm"
+                                >
+                                    <AlertCircle className="w-4 h-4 shrink-0" />
+                                    Reset link sent! Please check your inbox.
+                                </motion.div>
+                            )}
                         </AnimatePresence>
 
                         <button
                             type="submit"
-                            disabled={loading}
+                            disabled={loading || resetSent}
                             className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold py-3 px-6 rounded-xl transition-all flex items-center justify-center gap-2 group"
                         >
                             {loading ? (
                                 <Loader2 className="w-5 h-5 animate-spin" />
                             ) : (
-                                mode === 'login' ? 'Sign In' : 'Sign Up'
+                                mode === 'login' ? 'Sign In' : mode === 'register' ? 'Sign Up' : 'Send Reset Link'
                             )}
                         </button>
                     </form>
@@ -174,9 +219,14 @@ const Login: React.FC = () => {
                     </button>
 
                     <p className="mt-8 text-center text-slate-500 text-sm">
-                        {mode === 'login' ? "Don't have an account?" : "Already have an account?"}{' '}
+                        {mode === 'login' ? "Don't have an account?" : mode === 'register' ? "Already have an account?" : "Remember your password?"}{' '}
                         <button
-                            onClick={() => setMode(mode === 'login' ? 'register' : 'login')}
+                            type="button"
+                            onClick={() => {
+                                setMode(mode === 'login' ? 'register' : 'login');
+                                setResetSent(false);
+                                setError(null);
+                            }}
                             className="text-indigo-400 hover:text-indigo-300 font-semibold transition-colors"
                         >
                             {mode === 'login' ? 'Sign Up' : 'Sign In'}

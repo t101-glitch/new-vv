@@ -8,13 +8,17 @@ interface RouteProps {
 }
 
 export const ProtectedRoute: React.FC<RouteProps> = ({ children }) => {
-    const { isAuthenticated, loading } = useUser();
+    const { user, isAuthenticated, loading } = useUser();
     const location = useLocation();
 
     if (loading) return null;
 
     if (!isAuthenticated) {
         return <Navigate to="/login" state={{ from: location }} replace />;
+    }
+
+    if (user && !user.emailVerified) {
+        return <Navigate to="/verify-email" replace />;
     }
 
     return <>{children}</>;

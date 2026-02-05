@@ -1,4 +1,6 @@
 const { onRequest } = require("firebase-functions/v2/https");
+const { onSchedule } = require("firebase-functions/v2/scheduler");
+const { logger } = require("firebase-functions");
 const admin = require("firebase-admin");
 const axios = require("axios");
 const crypto = require("crypto");
@@ -33,7 +35,7 @@ exports.paystackWebhook = onRequest(async (req, res) => {
 
         try {
             // Upgrade User Plan in Data Connect via GraphQL
-            const DATA_CONNECT_ENDPOINT = `https://us-central1-varsityvault-db12c.firebaseapp.com/graphql`;
+            const DATA_CONNECT_ENDPOINT = `https://us-central1-varsityv-9b0b5.firebaseapp.com/graphql`;
 
             const mutation = `
                 mutation UpdateUserPlan($id: String!, $plan: String!) {
@@ -65,4 +67,62 @@ exports.paystackWebhook = onRequest(async (req, res) => {
     }
 
     res.status(200).send("ok");
+});
+
+/**
+ * Scheduled function to clean up inactive sessions.
+ * Runs every 24 hours to mark sessions inactive for > 24 hours as DELETED.
+ */
+exports.cleanupSessions = onSchedule("every 24 hours", async (event) => {
+    const db = admin.firestore();
+    const now = Date.now();
+    const oneDayAgo = now - (24 * 60 * 60 * 1000);
+    const timestamp = admin.firestore.Timestamp.fromMillis(oneDayAgo);
+
+    logger.info(`Running scheduled cleanup for sessions inactive since ${new Date(oneDayAgo).toISOString()}`);
+
+    try {
+        // Query root sessions collection
+        const inactiveSessions = await db.collection("sessions")
+            .where("status", "!=", "DELETED")
+            .where("updatedAt", "<", timestamp)
+            .get();
+
+        if (inactiveSessions.empty) {
+            logger.info("No inactive sessions to clean up.");
+            return;
+        }
+
+        const batch = db.batch();
+        let count = 0;
+
+        inactiveSessions.docs.forEach((doc) => {
+            const data = doc.data();
+            const ownerUid = data.ownerUid;
+
+            // Update root session
+            batch.update(doc.ref, {
+                status: "DELETED",
+                autoDeleted: true,
+                deletedAt: admin.firestore.FieldValue.serverTimestamp()
+            });
+
+            // Update user mirror
+            if (ownerUid) {
+                const mirrorRef = db.collection("users").doc(ownerUid).collection("sessions").doc(doc.id);
+                batch.update(mirrorRef, {
+                    status: "DELETED",
+                    autoDeleted: true,
+                    deletedAt: admin.firestore.FieldValue.serverTimestamp()
+                });
+            }
+
+            count++;
+        });
+
+        await batch.commit();
+        logger.info(`Successfully cleaned up ${count} inactive sessions.`);
+    } catch (error) {
+        logger.error("CRITICAL: Error in cleanupSessions scheduled function:", error);
+    }
 });

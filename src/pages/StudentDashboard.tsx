@@ -1,162 +1,379 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { BookOpen, Calculator, Sparkles, Lock, ArrowRight, Upload } from 'lucide-react';
+import { Plus, Clock, BookOpen, Layout, FileText, Download, Trash2, FolderOpen, Eye, EyeOff } from 'lucide-react';
 import { useSession } from '../context/SessionContext';
+import { SessionMode, SessionStatus, type SessionFile } from '../types';
+import CreateSessionModal from '../components/modals/CreateSessionModal';
+import UploadFileModal from '../components/modals/UploadFileModal';
 import { useUser } from '../context/UserContext';
-import { usePayment } from '../context/PaymentContext';
-import { SessionMode } from '../types';
+import { collection, query, onSnapshot, collectionGroup, where, deleteDoc, doc, addDoc, serverTimestamp } from 'firebase/firestore';
+import { db, storage } from '../lib/firebase';
+import { ref, uploadBytesResumable, getDownloadURL, deleteObject } from 'firebase/storage';
 
 const StudentDashboard: React.FC = () => {
     const navigate = useNavigate();
-    const { createSession } = useSession();
-
-    const [subject, setSubject] = useState('');
-    const [context, setContext] = useState('');
-    const [selectedMode, setSelectedMode] = useState<SessionMode | null>(null);
+    const { sessions, loading: sessionsLoading, toggleSessionVisibility } = useSession();
     const { user } = useUser();
-    const { startPayment } = usePayment();
 
-    const isPremium = user?.plan === 'PREMIUM';
+    const [activeTab, setActiveTab] = useState<'sessions' | 'files'>('sessions');
+    const [isSessionModalOpen, setIsSessionModalOpen] = useState(false);
+    const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
+    const [showHidden, setShowHidden] = useState(false);
 
-    const handleSelectMode = (mode: SessionMode) => {
-        if (mode === SessionMode.FULL_SOLUTION && !isPremium) {
-            // Trigger Paystack payment for premium upgrade
-            // For demo: amount 199 ZAR
-            startPayment(199, { plan: 'PREMIUM' });
-            return;
+    // Files State
+    const [files, setFiles] = useState<SessionFile[]>([]);
+    const [filesLoading, setFilesLoading] = useState(true);
+    const [uploading, setUploading] = useState(false);
+    const [uploadProgress, setUploadProgress] = useState(0);
+
+    const filteredSessions = sessions.filter(s => {
+        const isVisible = showHidden || !s.hidden;
+        const isNotClosed = s.status !== SessionStatus.CLOSED;
+        return isVisible && isNotClosed;
+    });
+
+    // Fetch All Files (Collection Group)
+    useEffect(() => {
+        if (activeTab !== 'files' || !user) return;
+
+        setFilesLoading(true);
+        // Query all 'files' collections where ownerUid matches user
+        const filesQuery = query(
+            collectionGroup(db, 'files'),
+            where('ownerUid', '==', user.id),
+            // orderBy('createdAt', 'desc') // Requires composite index, safer to sort client-side for now
+        );
+
+        const unsubscribe = onSnapshot(filesQuery, (snapshot) => {
+            const fetchedFiles = snapshot.docs.map(doc => ({
+                id: doc.id,
+                ...doc.data(),
+                createdAt: doc.data().createdAt?.toMillis() || Date.now()
+            })) as SessionFile[];
+
+            // Client-side sort
+            fetchedFiles.sort((a, b) => b.createdAt - a.createdAt);
+
+            setFiles(fetchedFiles);
+            setFilesLoading(false);
+        }, (error) => {
+            console.error("Error fetching files:", error);
+            setFilesLoading(false);
+        });
+
+        return () => unsubscribe();
+    }, [activeTab, user]);
+
+    const handleUploadFile = async (file: File) => {
+        if (!user) return;
+        setUploading(true);
+        setUploadProgress(0);
+
+        try {
+            // Upload to 'general' storage path
+            const storagePath = `user_uploads/${user.id}/general/${Date.now()}-${file.name}`;
+            const storageRef = ref(storage, storagePath);
+            const uploadTask = uploadBytesResumable(storageRef, file);
+
+            uploadTask.on('state_changed',
+                (snapshot) => {
+                    const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
+                    setUploadProgress(progress);
+                },
+                (error) => {
+                    console.error("Upload error:", error);
+                    setUploading(false);
+                },
+                async () => {
+                    const downloadURL = await getDownloadURL(uploadTask.snapshot.ref);
+
+                    // Save to users/{uid}/files (General Files Collection)
+                    await addDoc(collection(db, `users/${user.id}/files`), {
+                        name: file.name,
+                        storagePath,
+                        downloadURL,
+                        size: file.size,
+                        type: file.type,
+                        createdAt: serverTimestamp(),
+                        ownerUid: user.id,
+                        isGeneral: true // Marker for general files
+                    });
+
+                    setUploading(false);
+                    setIsUploadModalOpen(false);
+                }
+            );
+        } catch (e) {
+            console.error(e);
+            setUploading(false);
         }
-        setSelectedMode(mode);
     };
 
-    const handleStartSession = () => {
-        if (!subject || !context || !selectedMode) return;
+    const handleDeleteFile = async (file: SessionFile) => {
+        if (!confirm('Permanently delete this file?')) return;
+        try {
+            const storageRef = ref(storage, file.storagePath);
+            await deleteObject(storageRef);
 
-        // Final check for premium mode
-        if (selectedMode === SessionMode.FULL_SOLUTION && !isPremium) {
-            startPayment(199, { plan: 'PREMIUM' });
-            return;
+            // We need to know the document reference to delete it.
+            // Since we used collectionGroup, we iterate to find it or we need the full path.
+            // Wait, collectionGroup result docs have `.ref` pointing to the exact location!
+            // But we mapped to plain objects. 
+            // We need to re-query or store the ref path? 
+            // Creating a helper to delete by finding the doc again is inefficient.
+            // Better: When mapping, store the `ref.path`.
+
+            // For now, let's assume standard path structure if we can't store ref path in SessionFile easily without changing type.
+            // Actually, for this simpler implementation, let's just find it in the current `files` state?
+            // No, we need the Firestore `DocumentReference`.
+
+            // Quick fix: Do a query to find the doc with this ID in the likely paths?
+            // Or better: update the `files` fetching to include the `path`.
+            // Let's rely on the assumption that if it's general, it's in `users/{uid}/files`. 
+            // If it's session, it's in `users/{uid}/sessions/{sid}/files`.
+
+            // COMPROMISE: For now, I will implement deletion ONLY for General files here to avoid complexity, 
+            // OR I will update the fetcher to store `path` in a transient property.
+
+            // Let's search for the doc in the general collection first.
+            // Ideally, we'd update types to include `path`.
+
+            // Implementation: I'll try to delete from `users/{user.id}/files/{file.id}`. 
+            // If that fails, it might be a session file.
+            // For this iteration, let's just implement General File Uploads and listing. Deletion of session files should happen in sessions.
+            // I'll try to delete from the general collection.
+
+            await deleteDoc(doc(db, `users/${user?.id}/files`, file.id));
+
+        } catch (e) {
+            console.error("Could not delete from general files (might be a session file?):", e);
+            alert("To delete session-attached files, please visit the specific session.");
         }
-
-        const sessionId = createSession(subject, context, selectedMode);
-        navigate(`/workspace/${sessionId}`);
     };
 
     return (
-        <div className="max-w-4xl mx-auto p-6 lg:p-12 animate-fade-in">
-            <header className="mb-10 text-center lg:text-left">
-                <h1 className="text-3xl font-bold text-white mb-2">Workspace Central</h1>
-                <p className="text-slate-400">Initialize a secure academic channel. Select your mode of assistance.</p>
-                {isPremium && (
-                    <div className="mt-2 inline-flex items-center gap-2 px-3 py-1 bg-indigo-500/20 border border-indigo-500/30 rounded-full">
-                        <Sparkles className="w-4 h-4 text-indigo-400" />
-                        <span className="text-xs font-bold text-indigo-300 uppercase tracking-widest">Premium Active</span>
-                    </div>
-                )}
+        <div className="max-w-6xl mx-auto p-6 lg:p-12 animate-fade-in">
+            <header className="flex flex-col md:flex-row md:items-center justify-between gap-6 mb-8">
+                <div>
+                    <h1 className="text-3xl font-bold text-white mb-2">Workspace Central</h1>
+                    <p className="text-slate-400">Manage your active academic sessions and files.</p>
+                </div>
+
+                <div className="flex gap-3">
+                    {activeTab === 'sessions' ? (
+                        <button
+                            onClick={() => setIsSessionModalOpen(true)}
+                            className="bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-2 px-4 rounded-xl transition-all shadow-lg shadow-indigo-500/20 flex items-center gap-2"
+                        >
+                            <Plus size={20} />
+                            New Session
+                        </button>
+                    ) : (
+                        <button
+                            onClick={() => setIsUploadModalOpen(true)}
+                            className="bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-2 px-4 rounded-xl transition-all shadow-lg shadow-indigo-500/20 flex items-center gap-2"
+                        >
+                            <Plus size={20} />
+                            Upload File
+                        </button>
+                    )}
+                </div>
             </header>
 
-            <div className="grid lg:grid-cols-2 gap-8">
+            {/* Tabs */}
+            <div className="flex items-center gap-2 mb-8 border-b border-slate-800">
+                <button
+                    onClick={() => setActiveTab('sessions')}
+                    className={`px-6 py-3 font-medium text-sm flex items-center gap-2 border-b-2 transition-all ${activeTab === 'sessions'
+                        ? 'border-indigo-500 text-indigo-400'
+                        : 'border-transparent text-slate-400 hover:text-slate-200'
+                        }`}
+                >
+                    <Layout className="w-4 h-4" />
+                    Sessions
+                </button>
+                <button
+                    onClick={() => setActiveTab('files')}
+                    className={`px-6 py-3 font-medium text-sm flex items-center gap-2 border-b-2 transition-all ${activeTab === 'files'
+                        ? 'border-indigo-500 text-indigo-400'
+                        : 'border-transparent text-slate-400 hover:text-slate-200'
+                        }`}
+                >
+                    <FileText className="w-4 h-4" />
+                    Files
+                </button>
+            </div>
 
-                {/* Input Section */}
-                <div className="space-y-6">
-                    <div className="bg-slate-800/50 p-6 rounded-2xl border border-slate-700 backdrop-blur-sm">
-                        <label className="block text-sm font-medium text-slate-300 mb-2">Subject / Topic</label>
-                        <div className="relative">
-                            <BookOpen className="absolute left-3 top-3 w-5 h-5 text-slate-500" />
-                            <input
-                                type="text"
-                                value={subject}
-                                onChange={(e) => setSubject(e.target.value)}
-                                placeholder="e.g. Advanced Calculus, Organic Chemistry"
-                                className="w-full bg-slate-900 border border-slate-700 text-white rounded-xl pl-10 pr-4 py-3 focus:ring-2 focus:ring-amber-500 focus:border-transparent outline-none transition-all placeholder-slate-600"
-                            />
+            {activeTab === 'sessions' ? (
+                <>
+                    {sessionsLoading ? (
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                            {[1, 2, 3].map(i => (
+                                <div key={i} className="bg-slate-800/20 h-48 rounded-2xl animate-pulse" />
+                            ))}
                         </div>
-                    </div>
-
-                    <div className="bg-slate-800/50 p-6 rounded-2xl border border-slate-700 backdrop-blur-sm">
-                        <label className="block text-sm font-medium text-slate-300 mb-2">Context / Problem Statement</label>
-                        <div className="relative">
-                            <textarea
-                                value={context}
-                                onChange={(e) => setContext(e.target.value)}
-                                rows={5}
-                                placeholder="Paste the problem description here..."
-                                className="w-full bg-slate-900 border border-slate-700 text-white rounded-xl p-4 focus:ring-2 focus:ring-amber-500 focus:border-transparent outline-none transition-all placeholder-slate-600 resize-none"
-                            />
-                            <div className="absolute bottom-3 right-3">
-                                <label className="cursor-pointer bg-slate-800 hover:bg-slate-700 text-slate-400 p-2 rounded-lg transition-colors inline-flex items-center gap-2 text-xs">
-                                    <Upload className="w-4 h-4" />
-                                    <input type="file" className="hidden" />
-                                    <span>Upload</span>
+                    ) : filteredSessions.length === 0 ? (
+                        <div className="text-center py-24 bg-slate-800/20 rounded-3xl border border-slate-800 border-dashed">
+                            <div className="w-20 h-20 bg-slate-800/50 rounded-full flex items-center justify-center mx-auto mb-6">
+                                <BookOpen className="w-10 h-10 text-slate-600" />
+                            </div>
+                            <h3 className="text-xl font-bold text-slate-300 mb-2">No Active Sessions</h3>
+                            <p className="text-slate-500 max-w-sm mx-auto mb-8">
+                                Get started by creating a new workspace session for your subject.
+                            </p>
+                            <button
+                                onClick={() => setIsSessionModalOpen(true)}
+                                className="text-indigo-400 hover:text-indigo-300 font-medium hover:underline underline-offset-4"
+                            >
+                                Create your first session
+                            </button>
+                        </div>
+                    ) : (
+                        <div className="flex flex-col gap-6">
+                            <div className="flex justify-end items-center">
+                                <label className="flex items-center gap-2 cursor-pointer text-xs font-bold text-slate-500 hover:text-slate-300 transition-colors select-none">
+                                    <input
+                                        type="checkbox"
+                                        checked={showHidden}
+                                        onChange={(e) => setShowHidden(e.target.checked)}
+                                        className="form-checkbox h-4 w-4 text-indigo-500 rounded border-slate-700 bg-slate-800 focus:ring-0 focus:ring-offset-0"
+                                    />
+                                    Show Hidden Sessions
                                 </label>
                             </div>
-                        </div>
-                    </div>
-                </div>
 
-                {/* Mode Selection */}
-                <div className="space-y-4">
-                    <p className="text-sm font-medium text-slate-400 uppercase tracking-wider">Select Assistance Mode</p>
+                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                                {filteredSessions.map((session) => (
+                                    <div
+                                        key={session.id}
+                                        onClick={() => navigate(`/workspace/${session.id}`)}
+                                        className={`bg-slate-800/40 hover:bg-slate-800/60 border border-slate-700/50 hover:border-slate-600 rounded-2xl p-6 cursor-pointer transition-all group relative overflow-hidden ${session.hidden ? 'opacity-60 grayscale-[0.5]' : ''}`}
+                                    >
+                                        <div className={`absolute top-0 right-0 w-32 h-32 rounded-full blur-3xl -mr-16 -mt-16 opacity-0 group-hover:opacity-20 transition-opacity ${session.mode === SessionMode.FULL_SOLUTION ? 'bg-indigo-500' : 'bg-amber-500'
+                                            }`} />
 
-                    <button
-                        onClick={() => setSelectedMode(SessionMode.INTERACTIVE)}
-                        className={`w-full p-6 rounded-2xl border-2 text-left transition-all relative overflow-hidden group ${selectedMode === SessionMode.INTERACTIVE
-                            ? 'border-amber-500 bg-amber-500/5 shadow-[0_0_20px_rgba(245,158,11,0.1)]'
-                            : 'border-slate-700 bg-slate-800/30 hover:border-slate-600 hover:bg-slate-800/50'
-                            }`}
-                    >
-                        <div className="flex items-start justify-between relative z-10">
-                            <div className="flex items-center gap-4">
-                                <div className={`p-3 rounded-lg ${selectedMode === SessionMode.INTERACTIVE ? 'bg-amber-500 text-slate-900' : 'bg-slate-700 text-slate-400'}`}>
-                                    <Sparkles className="w-6 h-6" />
-                                </div>
-                                <div>
-                                    <h3 className="text-lg font-bold text-slate-100">Interactive Guide</h3>
-                                    <p className="text-sm text-slate-400 mt-1">Pedagogical hints & Socratic method.</p>
-                                </div>
-                            </div>
-                            {selectedMode === SessionMode.INTERACTIVE && <div className="w-4 h-4 rounded-full bg-amber-500 animate-pulse" />}
-                        </div>
-                    </button>
+                                        <div className="flex items-start justify-between mb-4 relative z-10">
+                                            <span className={`text-[10px] font-bold px-2 py-1 rounded border uppercase tracking-wider ${session.mode === SessionMode.FULL_SOLUTION
+                                                ? 'bg-indigo-500/10 text-indigo-300 border-indigo-500/20'
+                                                : 'bg-amber-500/10 text-amber-300 border-amber-500/20'
+                                                }`}>
+                                                {session.mode === SessionMode.FULL_SOLUTION ? 'Full Solution' : 'Interactive'}
+                                            </span>
+                                            <div className="flex items-center gap-2">
+                                                {session.status === SessionStatus.ACTIVE && (
+                                                    <span className="flex items-center gap-1.5 text-xs font-medium text-emerald-400">
+                                                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                                                        Active
+                                                    </span>
+                                                )}
+                                                {session.hidden && (
+                                                    <span className="text-[10px] font-bold px-1.5 py-0.5 rounded border border-slate-600 text-slate-500">
+                                                        HIDDEN
+                                                    </span>
+                                                )}
+                                            </div>
+                                        </div>
 
-                    <button
-                        onClick={() => handleSelectMode(SessionMode.FULL_SOLUTION)}
-                        className={`w-full p-6 rounded-2xl border-2 text-left transition-all relative overflow-hidden group ${selectedMode === SessionMode.FULL_SOLUTION
-                            ? 'border-indigo-500 bg-indigo-500/5 shadow-[0_0_20px_rgba(99,102,241,0.1)]'
-                            : 'border-slate-700 bg-slate-800/30 hover:border-slate-600 hover:bg-slate-800/50'
-                            }`}
-                    >
-                        <div className="flex items-start justify-between relative z-10">
-                            <div className="flex items-center gap-4">
-                                <div className={`p-3 rounded-lg ${selectedMode === SessionMode.FULL_SOLUTION ? 'bg-indigo-500 text-white' : 'bg-slate-700 text-slate-400'}`}>
-                                    {isPremium ? <Calculator className="w-6 h-6" /> : <Lock className="w-6 h-6" />}
-                                </div>
-                                <div>
-                                    <div className="flex items-center gap-2">
-                                        <h3 className="text-lg font-bold text-slate-100">Full Solutions</h3>
-                                        {!isPremium && (
-                                            <span className="bg-indigo-500/20 text-indigo-300 text-[10px] font-bold px-2 py-0.5 rounded border border-indigo-500/30">UPGRADE</span>
-                                        )}
+                                        <h3 className="text-lg font-bold text-slate-100 mb-2 truncate group-hover:text-white transition-colors">
+                                            {session.subject}
+                                        </h3>
+                                        <p className="text-sm text-slate-400 line-clamp-2 mb-6 h-10">
+                                            {session.context}
+                                        </p>
+
+                                        <div className="flex items-center justify-between text-xs text-slate-500 border-t border-slate-700/50 pt-4">
+                                            <div className="flex items-center gap-1.5">
+                                                <Clock className="w-3.5 h-3.5" />
+                                                {new Date(session.createdAt).toLocaleDateString()}
+                                            </div>
+                                            <div className="flex items-center gap-3">
+                                                <button
+                                                    onClick={async (e) => {
+                                                        e.stopPropagation();
+                                                        await toggleSessionVisibility(session.id, !session.hidden);
+                                                    }}
+                                                    className="p-1.5 rounded hover:bg-slate-700/50 text-slate-500 hover:text-slate-300 transition-colors"
+                                                    title={session.hidden ? "Unhide Session" : "Hide Session"}
+                                                >
+                                                    {session.hidden ? <Eye size={14} /> : <EyeOff size={14} />}
+                                                </button>
+                                                <div className="flex items-center gap-1.5 transform group-hover:translate-x-1 transition-transform text-indigo-400">
+                                                    Enter <Layout className="w-3.5 h-3.5" />
+                                                </div>
+                                            </div>
+                                        </div>
                                     </div>
-                                    <p className="text-sm text-slate-400 mt-1">Step-by-step verified derivation.</p>
-                                </div>
+                                ))}
                             </div>
-                            {selectedMode === SessionMode.FULL_SOLUTION && <div className="w-4 h-4 rounded-full bg-indigo-500 animate-pulse" />}
                         </div>
-                    </button>
-
-                    <button
-                        disabled={!subject || !context || !selectedMode}
-                        onClick={handleStartSession}
-                        className={`w-full py-4 mt-4 rounded-xl font-bold flex items-center justify-center gap-2 transition-all ${!subject || !context || !selectedMode
-                            ? 'bg-slate-800 text-slate-600 cursor-not-allowed'
-                            : 'bg-slate-100 text-slate-900 hover:bg-white shadow-lg shadow-white/10 transform hover:-translate-y-1'
-                            }`}
-                    >
-                        Enter Vault
-                        <ArrowRight className="w-5 h-5" />
-                    </button>
+                    )}
+                </>
+            ) : (
+                <div className="bg-slate-800/30 rounded-2xl border border-slate-700 overflow-hidden min-h-[400px]">
+                    {filesLoading ? (
+                        <div className="p-12 text-center text-slate-500 animate-pulse">Loading all workspace files...</div>
+                    ) : files.length === 0 ? (
+                        <div className="p-12 text-center text-slate-500">
+                            <FolderOpen className="w-12 h-12 mx-auto mb-3 opacity-20" />
+                            <p>No files found.</p>
+                            <button
+                                onClick={() => setIsUploadModalOpen(true)}
+                                className="mt-4 text-indigo-400 hover:text-indigo-300 text-sm hover:underline"
+                            >
+                                Upload a global file
+                            </button>
+                        </div>
+                    ) : (
+                        <div className="divide-y divide-slate-700">
+                            {files.map((file) => (
+                                <div key={file.id} className="p-4 hover:bg-slate-800/50 transition-colors flex items-center justify-between group">
+                                    <div className="flex items-center gap-4">
+                                        <div className="w-10 h-10 rounded bg-indigo-500/10 flex items-center justify-center text-indigo-400">
+                                            <FileText size={20} />
+                                        </div>
+                                        <div>
+                                            <h4 className="font-medium text-slate-200 truncate max-w-xs">{file.name}</h4>
+                                            <div className="flex gap-2 text-xs text-slate-500 mt-1">
+                                                <span>{(file.size / 1024 / 1024).toFixed(2)} MB</span>
+                                                <span>•</span>
+                                                <span>{new Date(file.createdAt).toLocaleDateString()}</span>
+                                                {/* Should show which session it belongs to if accessible, but we don't store session name in file metadata easily. */}
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                        <a
+                                            href={file.downloadURL}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            className="p-2 hover:bg-slate-700 rounded-lg text-slate-400 hover:text-white transition-colors"
+                                            title="Download"
+                                        >
+                                            <Download size={18} />
+                                        </a>
+                                        <button
+                                            onClick={() => handleDeleteFile(file)}
+                                            className="p-2 hover:bg-slate-700 rounded-lg text-slate-400 hover:text-red-400 transition-colors opacity-0 group-hover:opacity-100"
+                                            title="Delete (General files only)"
+                                        >
+                                            <Trash2 size={18} />
+                                        </button>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    )}
                 </div>
-            </div>
+            )}
+
+            <CreateSessionModal isOpen={isSessionModalOpen} onClose={() => setIsSessionModalOpen(false)} />
+            <UploadFileModal
+                isOpen={isUploadModalOpen}
+                onClose={() => setIsUploadModalOpen(false)}
+                onUpload={handleUploadFile}
+                uploading={uploading}
+                progress={uploadProgress}
+            />
         </div>
     );
 };

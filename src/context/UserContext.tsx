@@ -5,9 +5,12 @@ import {
     signOut,
     signInWithEmailAndPassword,
     createUserWithEmailAndPassword,
-    updateProfile
+    updateProfile,
+    sendEmailVerification,
+    sendPasswordResetEmail
 } from 'firebase/auth';
-import { auth, googleProvider } from '../lib/firebase';
+import { auth, googleProvider, db } from '../lib/firebase';
+import { doc, getDoc, setDoc } from 'firebase/firestore';
 import { UserRole, type User } from '../types';
 
 export interface UserContextType {
@@ -18,6 +21,7 @@ export interface UserContextType {
     registerWithEmail: (email: string, password: string, name: string) => Promise<void>;
     logout: () => Promise<void>;
     upgradePlan: (plan: 'FREE' | 'PREMIUM') => void;
+    resetPassword: (email: string) => Promise<void>;
     isAuthenticated: boolean;
 }
 
@@ -28,15 +32,46 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
-        const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
+        const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
             if (firebaseUser) {
+                // Fetch user data from Firestore
+                const userDocRef = doc(db, 'users', firebaseUser.uid);
+                const userDocSnap = await getDoc(userDocRef);
+
+                let userData: Partial<User> = {};
+
+                if (userDocSnap.exists()) {
+                    userData = userDocSnap.data() as Partial<User>;
+                } else {
+                    // Create new user document if it doesn't exist (e.g. first Google login)
+                    const newUser: User = {
+                        id: firebaseUser.uid,
+                        email: firebaseUser.email || '',
+                        name: firebaseUser.displayName || 'Anonymous User',
+                        role: UserRole.STUDENT,
+                        avatarUrl: firebaseUser.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${firebaseUser.uid}`,
+                        plan: 'FREE',
+                        emailVerified: firebaseUser.emailVerified
+                    };
+                    await setDoc(userDocRef, newUser);
+                    userData = newUser;
+                }
+
+                // Bootstrap Admin Role for kosportz1@gmail.com
+                if (firebaseUser.email === 'kosportz1@gmail.com' && userData.role !== UserRole.ADMIN) {
+                    userData.role = UserRole.ADMIN;
+                    await setDoc(userDocRef, { role: UserRole.ADMIN }, { merge: true });
+                }
+
                 setUser({
                     id: firebaseUser.uid,
-                    name: firebaseUser.displayName || 'Anonymous User',
-                    role: UserRole.STUDENT,
-                    avatarUrl: firebaseUser.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${firebaseUser.uid}`,
-                    plan: 'FREE' // Default plan
-                });
+                    email: firebaseUser.email || '',
+                    name: firebaseUser.displayName || userData.name || 'Anonymous User',
+                    role: userData.role || UserRole.STUDENT,
+                    avatarUrl: firebaseUser.photoURL || userData.avatarUrl || `https://api.dicebear.com/7.x/avataaars/svg?seed=${firebaseUser.uid}`,
+                    plan: userData.plan || 'FREE',
+                    emailVerified: firebaseUser.emailVerified
+                } as User);
             } else {
                 setUser(null);
             }
@@ -63,13 +98,25 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         try {
             const userCredential = await createUserWithEmailAndPassword(auth, email, password);
             await updateProfile(userCredential.user, { displayName: name });
-            setUser({
+
+            // Create user document in Firestore
+            await setDoc(doc(db, 'users', userCredential.user.uid), {
                 id: userCredential.user.uid,
+                email: email,
                 name: name,
                 role: UserRole.STUDENT,
-                avatarUrl: `https://api.dicebear.com/7.x/avataaars/svg?seed=${userCredential.user.uid}`,
-                plan: 'FREE'
+                plan: 'FREE',
+                createdAt: Date.now(),
+                emailVerified: false
             });
+
+            // Send verification email
+            await sendEmailVerification(userCredential.user);
+
+            // Sign out immediately to prevent auto-login
+            await signOut(auth);
+            setUser(null);
+
         } catch (error: any) {
             console.error('Error registering with Email:', error);
             throw error;
@@ -92,6 +139,15 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         }
     };
 
+    const resetPassword = async (email: string) => {
+        try {
+            await sendPasswordResetEmail(auth, email);
+        } catch (error: any) {
+            console.error('Error sending reset email:', error);
+            throw error;
+        }
+    };
+
     return (
         <UserContext.Provider value={{
             user,
@@ -101,6 +157,7 @@ export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
             registerWithEmail,
             logout,
             upgradePlan,
+            resetPassword,
             isAuthenticated: !!user
         }}>
             {!loading && children}

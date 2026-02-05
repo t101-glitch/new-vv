@@ -1,15 +1,18 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider } from 'firebase/auth';
-import { getAnalytics } from "firebase/analytics";
+import { getAnalytics } from 'firebase/analytics';
+import { getFirestore } from 'firebase/firestore';
+import { getStorage } from 'firebase/storage';
+import { ENV } from '../config/env';
 
 const firebaseConfig = {
-    apiKey: "AIzaSyDFf4dfaE1s2M94mbZclEl-2_SsjeO0Jxc",
-    authDomain: "varsityvault-db12c.firebaseapp.com",
-    projectId: "varsityvault-db12c",
-    storageBucket: "varsityvault-db12c.firebasestorage.app",
-    messagingSenderId: "763034122272",
-    appId: "1:763034122272:web:30fdc164a7026ed273a445",
-    measurementId: "G-G5W4VF786R"
+    apiKey: ENV.FIREBASE_API_KEY,
+    authDomain: ENV.FIREBASE_AUTH_DOMAIN,
+    projectId: ENV.FIREBASE_PROJECT_ID,
+    storageBucket: ENV.FIREBASE_STORAGE_BUCKET,
+    messagingSenderId: ENV.FIREBASE_MESSAGING_SENDER_ID,
+    appId: ENV.FIREBASE_APP_ID,
+    measurementId: ENV.FIREBASE_MEASUREMENT_ID
 };
 
 // Initialize Firebase
@@ -17,5 +20,7 @@ const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
 export const analytics = typeof window !== 'undefined' ? getAnalytics(app) : null;
+export const db = getFirestore(app);
+export const storage = getStorage(app);
 
 export default app;

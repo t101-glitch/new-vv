@@ -14,16 +14,22 @@ export type SessionMode = typeof SessionMode[keyof typeof SessionMode];
 export const SessionStatus = {
     ACTIVE: 'ACTIVE',
     WAITING_FOR_ADMIN: 'WAITING_FOR_ADMIN',
-    COMPLETED: 'COMPLETED'
+    COMPLETED: 'COMPLETED',
+    CLOSED: 'CLOSED'
 } as const;
 export type SessionStatus = typeof SessionStatus[keyof typeof SessionStatus];
 
 export interface Message {
     id: string;
-    role: UserRole;
+    senderUid: string;
+    senderRole: UserRole;
+    senderName: string;
     content: string;
-    timestamp: number;
-    isDraft?: boolean;
+    createdAt: number;
+    // Backwards compatibility for existing messages if needed
+    // but ideally we migrate or just map them
+    role?: UserRole; // Deprecated
+    timestamp?: number; // Deprecated
 }
 
 export interface Session {
@@ -36,14 +42,32 @@ export interface Session {
     messages: Message[];
     createdAt: number;
     aiDraft?: string;
+    hidden?: boolean; // New: Allow users to hide sessions
+    ownerUid?: string;
+    ownerEmail?: string;
+    lastActiveAt?: number;
+    closedAt?: number;
 }
 
 export interface User {
     id: string;
+    email: string;
     name: string;
     role: UserRole;
     avatarUrl?: string;
     plan?: string;
+    emailVerified: boolean;
+}
+
+export interface SessionFile {
+    id: string;
+    name: string;
+    storagePath: string;
+    downloadURL: string;
+    size: number;
+    type: string;
+    createdAt: number;
+    ownerUid?: string;
 }
 
 export interface ChartDataPoint {

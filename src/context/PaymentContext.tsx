@@ -16,9 +16,9 @@ interface PaymentContextType {
 }
 
 const PaymentContext = createContext<PaymentContextType | undefined>(undefined);
+import { ENV } from '../config/env';
 
-// Real Paystack Test Public Key provided by user
-const PAYSTACK_PUBLIC_KEY = 'pk_test_9e69a61786b0d6b138e4df552bc2be6f0793bae9';
+const PAYSTACK_PUBLIC_KEY = ENV.PAYSTACK_PUBLIC_KEY;
 
 export const PaymentProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     const { user, upgradePlan } = useUser();
@@ -54,7 +54,7 @@ export const PaymentProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
         setPaystackConfig({
             publicKey: PAYSTACK_PUBLIC_KEY,
-            email: 'student@varsivault.app', // Should be user.email in production
+            email: user.email || 'student@varsivault.app',
             amount: amount * 100, // Paystack uses Kobo
             currency: 'ZAR',
             reference: 'VV_' + Math.floor((Math.random() * 1000000000) + 1),

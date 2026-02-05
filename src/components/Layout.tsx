@@ -151,8 +151,18 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
                     </div>
                 </div>
 
+                {/* Legal Links (Bottom Desktop) */}
+                <div className="mt-auto px-6 py-4 space-y-1 block">
+                    <Link to="/terms" onClick={() => setSidebarOpen(false)} className="block text-[10px] text-slate-500 hover:text-slate-300 transition-colors uppercase tracking-wider font-bold">
+                        Terms of Service
+                    </Link>
+                    <Link to="/privacy" onClick={() => setSidebarOpen(false)} className="block text-[10px] text-slate-500 hover:text-slate-300 transition-colors uppercase tracking-wider font-bold">
+                        Privacy Policy
+                    </Link>
+                </div>
+
                 {/* User Profile triggered menu */}
-                <div className="absolute bottom-0 left-0 right-0 p-4" ref={menuRef}>
+                <div className="md:relative p-4 mt-auto md:mt-0" ref={menuRef}>
                     <AnimatePresence>
                         {showProfileMenu && (
                             <motion.div

@@ -1,17 +1,87 @@
-# Firebase Security Rules (Data Connect)
+rules_version = '2';
 
-# Note: Data Connect rules are managed within the schema.gql using @auth decorators
-# Alternatively, if using Firestore/Storage:
+// Firebase Security Rules
+// Note: Alternatively, if using Firestore/Storage:
 
 service cloud.firestore {
   match /databases/{database}/documents {
-    match /sessions/{sessionId} {
-      // Students can only read/write their own sessions
-      allow read, write: if request.auth != null && (resource.data.studentId == request.auth.uid || request.auth.token.admin == true);
+    // Helper function to check if user is admin
+    function isAdmin() {
+      return request.auth != null && (
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'ADMIN' ||
+        request.auth.token.email == 'kosportz1@gmail.com'
+      );
     }
+
+    // Helper function to check if user is owner
+    function isOwner(userId) {
+      return request.auth != null && request.auth.uid == userId;
+    }
+
     match /users/{userId} {
-      allow read: if request.auth != null;
-      allow write: if request.auth != null && request.auth.uid == userId;
+      // Users can read their own profile, Admins can read all
+      allow read: if isOwner(userId) || isAdmin();
+      
+      // Write rules
+      allow create: if isOwner(userId);
+      // UPDATE: 
+      // 1. Admins can update anything (roles, plans)
+      // 2. 'kosportz1@gmail.com' can self-promote (Bootstrap)
+      // 3. Normal users can update their profile BUT CANNOT change 'role' or 'plan'
+      allow update: if isAdmin() 
+                    || (isOwner(userId) && request.auth.token.email == 'kosportz1@gmail.com')
+                    || (isOwner(userId) && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'plan']));
+      
+      // DELETE: Only Admins can delete users
+      allow delete: if isAdmin();
+
+      match /sessions/{sessionId} {
+        // Owner logic: Read/Write own sessions
+        // Admin logic: Read all, Write status/closedAt
+        allow read: if isOwner(userId) || isAdmin();
+        
+        // Creation: Owner only
+        allow create: if isOwner(userId);
+        
+        // Update: Owner (content/status) OR Admin (any field, specifically status/closedAt)
+        allow update, delete: if isOwner(userId) || isAdmin();
+        
+        match /messages/{messageId} {
+            // Owner can READ/WRITE
+            // Admin can READ/WRITE (as per new req)
+            allow read, write: if isOwner(userId) || isAdmin();
+        }
+
+        match /files/{fileId} {
+             // Owner can READ/WRITE
+             // Admin can READ.
+             // Admin can DELETE (WRITE)
+             allow read, write: if isOwner(userId) || isAdmin();
+        }
+      }
+
+      // 4. Global/General Files (Not attached to a specific session)
+      match /files/{fileId} {
+          allow read: if isOwner(userId) || isAdmin();
+          allow write: if isOwner(userId);
+      }
+    }
+
+    // 5. Collection Group Rule for Files (Enables querying ALL files across sessions)
+    match /{path=**}/files/{fileId} {
+        allow read: if resource.data.ownerUid == request.auth.uid || isAdmin();
+    }
+
+    // Root Sessions Collection (Metadata Mirror for Global Parsing)
+    match /sessions/{sessionId} {
+      // Admins can read all. Users can read their own (if needed, but mainly for admin listing)
+      allow read: if isAdmin() || (request.auth != null && resource.data.ownerUid == request.auth.uid);
+      
+      // Creation: User creates mirroring their own session
+      allow create: if request.auth != null && request.resource.data.ownerUid == request.auth.uid;
+      
+      // Update/Delete: Owner or Admin
+      allow update, delete: if isAdmin() || (request.auth != null && resource.data.ownerUid == request.auth.uid);
     }
   }
 }
